@@ -1,0 +1,314 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Infrastructure & Resources for SRI Monitor.
+
+Parameters:
+  BUCKETNAME:
+    Default: ""
+    Type: String
+  EC2SUBNET:
+    Default: ""
+    Type: String
+  VPCRANGE:
+    Default: ""
+    Type: String
+
+Resources:
+  IAMRoleDispatch:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: "SRIMonitor-DispatchRole"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - 
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      ManagedPolicyArns: 
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+        - "arn:aws:iam::aws:policy/AWSBatchFullAccess"
+        - "arn:aws:iam::aws:policy/AmazonS3FullAccess"
+
+  IAMRoleBatchComputeInstanceRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: SRIMonitor-BatchComputeInstanceRole
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action:
+          - sts:AssumeRole
+          Effect: Allow
+          Principal:
+            Service:
+            - ec2.amazonaws.com
+        Version: '2012-10-17'
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
+
+  IAMRoleBatchComputeServiceRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: "SRIMonitor-BatchComputeServiceRole"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AWSBatchServiceRole"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement: 
+          - 
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "batch.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+
+  IAMRoleBatchJobRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: "SRIMonitor-BatchJobRole"
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: 'sts:AssumeRole'
+
+  IAMInstanceProfileBatchInstance:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref IAMRoleBatchComputeInstanceRole
+
+  IAMPolicyDispatchS3Read:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: "SRIMonitor-DispatchPolicy"
+      Roles:
+        - !Ref IAMRoleDispatch
+      PolicyDocument:
+        Statement:
+          - Resource: "arn:aws:s3:::srimonitor-*"
+            Action:
+              - 's3:List*'
+            Effect: Allow
+          - Resource: "arn:aws:s3:::srimonitor-*/urls/*"
+            Action:
+              - 's3:GetObject'
+              - 's3:List*'
+            Effect: Allow
+
+  IAMPolicyBatchJobPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: "SRIMonitor-BatchJobPolicy"
+      Roles:
+        - !Ref IAMRoleBatchJobRole
+      PolicyDocument:
+        Statement:
+          - Resource: "arn:aws:s3:::srimonitor-*"
+            Action:
+              - 's3:List*'
+            Effect: Allow
+          - Resource:
+            - "arn:aws:s3:::srimonitor-*/files/*"
+            - "arn:aws:s3:::srimonitor-*/kvstore/*" 
+            - "arn:aws:s3:::srimonitor-*/alerts/*"
+            - "arn:aws:s3:::srimonitor-*/urls/*"
+            Action:
+              - 's3:PutObject'
+              - 's3:GetObject'
+              - 's3:List*'
+            Effect: Allow
+          - Resource: "arn:aws:s3:::*"
+            Action:
+              - "s3:ListAllMyBuckets"
+            Effect: Allow
+
+  IAMPolicyCloudWatchCreate:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: "SRIMonitor-CloudWatchPolicy"
+      Roles:
+        - !Ref IAMRoleBatchComputeInstanceRole
+        - !Ref IAMRoleBatchComputeServiceRole
+        - !Ref IAMRoleBatchJobRole
+      PolicyDocument:
+        Statement:
+          - Resource: "arn:aws:logs:*:*:*"
+            Action:
+              - "logs:*"
+            Effect: Allow
+
+  VPCBatchCompute:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VPCRANGE 
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId:
+        Ref: VPCBatchCompute
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId:
+        Ref: VPCBatchCompute
+      InternetGatewayId:
+        Ref: InternetGateway
+
+  Route:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId:
+        Ref: RouteTable
+      DestinationCidrBlock: "0.0.0.0/0"
+      GatewayId:
+        Ref: InternetGateway
+
+  SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId:
+        Ref: RouteTable
+      SubnetId:
+        Ref: EC2SubnetBatchComputeSubnet
+
+  SecurityGroupBatchComputeSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: "SRIMonitor-BatchComputeSecurityGroup"
+      GroupDescription: "Security Group for SRIMonitor Batch Compute Environment - allow typical web traffic."
+      VpcId:
+        Ref: VPCBatchCompute
+
+  EC2SubnetBatchComputeSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: !Ref EC2SUBNET
+      MapPublicIpOnLaunch: "True"
+      VpcId:
+        Ref: VPCBatchCompute
+
+  BatchComputeEnvironment:
+    Type: AWS::Batch::ComputeEnvironment 
+    Properties:
+      State: ENABLED
+      Type: MANAGED
+      ServiceRole:
+        Fn::GetAtt:
+          - "IAMRoleBatchComputeServiceRole"
+          - "Arn"
+      ComputeEnvironmentName: "SRIMonitor-BatchComputeEnvironment"
+      ComputeResources:
+        MinvCpus: 0
+        MaxvCpus: 20
+        DesiredvCpus: 0
+        Type: EC2
+        Subnets:
+          - !Ref EC2SubnetBatchComputeSubnet
+        InstanceTypes:
+          - optimal
+        InstanceRole:
+          Fn::GetAtt:
+            - "IAMInstanceProfileBatchInstance"
+            - "Arn"
+        SecurityGroupIds:
+          - 
+            Fn::GetAtt:
+              - "SecurityGroupBatchComputeSG"
+              - "GroupId"
+
+  BatchJobDefinition:
+    Type: AWS::Batch::JobDefinition
+    Properties:
+      Type: container
+      JobDefinitionName: "SRIMonitor-JobDefinition"
+      Timeout:
+        AttemptDurationSeconds: 300
+      RetryStrategy:
+        Attempts: 1
+      ContainerProperties:
+        Memory: 1000
+        Privileged: true
+        JobRoleArn:
+          'Fn::GetAtt':
+            - IAMRoleBatchJobRole
+            - Arn
+        ReadonlyRootFilesystem: false
+        Vcpus: 1
+        Image: ciscocsirt/srimonitor:latest
+
+  BatchJobQueue:
+    Type: AWS::Batch::JobQueue
+    Properties:
+      JobQueueName: "SRIMonitor-JobQueue"
+      ComputeEnvironmentOrder:
+        - Order: 1
+          ComputeEnvironment: !Ref BatchComputeEnvironment
+      State: ENABLED
+      Priority: 1
+
+  FunctionSRIMonitorDispatch:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      FunctionName: "SRIMonitor-Dispatch"
+      Handler: dispatch_lambda.lambda_handler
+      Environment:
+        Variables:
+          JOBDEFINITION_ARN: !Ref BatchJobDefinition
+          JOBQUEUE_ARN: !Ref BatchJobQueue
+          BUCKET_NAME: !Ref BUCKETNAME
+      Runtime: python3.7
+      CodeUri: 'src/aws/'
+      Description: 'Retrieve URLs to monitor from S3 and submit them as jobs to AWS Batch.'
+      MemorySize: 128
+      Timeout: 60
+      Role: 
+        'Fn::GetAtt':
+          - IAMRoleDispatch
+          - Arn
+
+  PolicySRIMonitorUserS3ReadOnly:
+    Type: AWS::IAM::Policy
+    Properties:
+      Users:
+        - !Ref SRIMonitorUser
+      PolicyName: "SRIMonitorUserS3ReadOnlyPolicy"
+      PolicyDocument:
+        Statement:
+          - Resource: !Sub "arn:aws:s3:::${BUCKETNAME}"
+            Action:
+              - 's3:List*'
+            Effect: Allow
+          - Resource: !Sub "arn:aws:s3:::${BUCKETNAME}/alerts/*"
+            Action:
+              - 's3:GetObject'
+              - 's3:List*'
+              - 's3:ListObjects'
+            Effect: Allow
+          - Resource: !Sub "arn:aws:s3:::${BUCKETNAME}/urls/*"
+            Action:
+              - 's3:GetObject'
+              - 's3:List*'
+              - 's3:ListObjects'
+              - 's3:PutObject'
+            Effect: Allow
+          - Resource: "arn:aws:s3:::*"
+            Effect: Allow
+            Action:
+              - "s3:ListAllMyBuckets"
+
+  SRIMonitorUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: SRIMonitorUser
