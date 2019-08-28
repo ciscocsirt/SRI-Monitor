@@ -277,6 +277,11 @@ Resources:
         'Fn::GetAtt':
           - IAMRoleDispatch
           - Arn
+      Events:
+        DispatchSchedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 days)
 
   PolicySRIMonitorUserS3ReadOnly:
     Type: AWS::IAM::Policy
