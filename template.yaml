@@ -281,7 +281,7 @@ Resources:
         DispatchSchedule:
           Type: Schedule
           Properties:
-            Schedule: rate(1 days)
+            Schedule: rate(1 day)
 
   PolicySRIMonitorUserS3ReadOnly:
     Type: AWS::IAM::Policy
